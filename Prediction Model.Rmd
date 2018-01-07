@@ -1,0 +1,215 @@
+---
+title: "Prediction Model"
+author: "Xin Y. Gao"
+date: "January 6, 2018"
+output: html_document
+---
+
+```{r, echo=TRUE}
+# Load the data
+con1 <- file("F:/Work/Coursera/10. Data Science Capstone/Week 1/final/en_US/en_US.blogs.txt")
+blogs <- readLines(con1, encoding = "UTF-8")
+close(con1)
+
+con2 <- file("F:/Work/Coursera/10. Data Science Capstone/Week 1/final/en_US/en_US.news.txt", "rb")
+news <- readLines(con2, encoding = "UTF-8", skipNul = T)
+close(con2)
+
+con3 <- file("F:/Work/Coursera/10. Data Science Capstone/Week 1/final/en_US/en_US.twitter.txt")
+twitter <- readLines(con3, encoding = "UTF-8", skipNul = T)
+close(con3)
+
+rm(con1); rm(con2); rm(con3)
+
+# Sample 5% from each of the three datasets
+set.seed(100)
+blogs1 <- sample(blogs, round(0.05*length(blogs)), replace = FALSE)
+news1 <- sample(news, round(0.05*length(news)), replace = FALSE)
+twitter1 <- sample(twitter, round(0.05*length(twitter)), replace = FALSE)
+```
+```{r}
+# clean the data
+clean <- function(x){
+  x <- iconv(x, "latin1", "UTF-8")
+  x <- gsub("a\u0080\u0099", "'", x, fixed=TRUE)
+  x <- gsub("a\u0080\u0093", " ", x, fixed=TRUE)
+  x <- gsub("a\u0080\u0098", " ", x, fixed=TRUE)
+  x <- gsub("a\u0080\u009c", " ", x, fixed=TRUE)
+  x <- gsub("a\u0080\u009d", " ", x, fixed=TRUE)
+  x <- gsub("a\u0080\u0094", " ", x, fixed=TRUE)
+  x <- gsub("a\u0080", " ", x, fixed=TRUE)
+  x <- gsub("<", " ", x)
+  x <- gsub(">", " ", x)
+  x <- gsub("\\. |\\.$", " <EOS> ", x)
+  x <- gsub("\\? |\\?$", " <EOS> ", x)
+  x <- gsub("\\! |\\!$", " <EOS> ", x)
+  x <- gsub("?", " ", fixed = TRUE, x)
+  x <- gsub("???Ts", " ", fixed = TRUE, x)
+  x <- gsub(" [b-hj-z] ", " ", x)
+  x <- gsub(" [B-HJ-Z] ", " ", x)
+  x <- gsub("[^[:alnum:][:space:]'<>]", " ", x)
+  x <- gsub("^ *'| +'|' +", " ", x) # remove apostrophes except the apostrophes in the contraction words
+  return(x)
+}
+
+blogs1 <- clean(blogs1)
+news1 <- clean(news1)
+twitter1 <- clean(twitter1)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(quanteda)
+# Turn each dataset into a corpus
+blogs <- corpus(blogs1)
+news <- corpus(news1)
+twitter <- corpus(twitter1)
+rm(blogs1); rm(news1); rm(twitter1)
+# Add some document level variables for each corpus
+docvars(blogs, "source") <- "blogs"
+docvars(news, "source") <- "news"
+docvars(twitter, "source") <- "twitter"
+docvars(blogs, "line") <- 1:ndoc(blogs)
+docvars(news, "line") <- 1:ndoc(news)
+docvars(twitter, "line") <- 1:ndoc(twitter)
+
+# Combine three corpora into one large corpus
+myCorpus <- blogs + news + twitter
+rm(blogs); rm(news); rm(twitter)
+
+# Read in a "blacklist" that contains profanity words. This file was downloaded from google (https://www.freewebheaders.com/full-list-of-bad-words-banned-by-google/). The words that appear in this list will be removed from the corpus.
+profanity <- as.character(read.csv("F:/Work/Coursera/10. Data Science Capstone/Week 2/analysis/full-list-of-bad-words-banned-by-google.csv", header = FALSE)$V1)
+```
+
+### N-gram Model
+
+The entire corpus was tokenized into unigrams, bigrams and trigrams.
+```{r}
+# Writie a function to tokenize the corpus into N-grams.
+ToTokenize <- function(object, n){
+  tokensAll <- tokens(object, remove_numbers = TRUE,
+                    remove_symbols = TRUE, remove_separators = TRUE,
+                    remove_twitter = FALSE, remove_hyphens = TRUE, remove_url = TRUE)
+  NoBadWord <- tokens_select(tokensAll, c(profanity), selection = "remove", case_insensitive = TRUE)
+  ng <- tokens_ngrams(NoBadWord, n, concatenator = " ")
+  newDfm <- dfm(ng)
+  newDfm <- dfm_select(newDfm, "^[e][o][s]|[e][o][s]$| [e][o][s] ", selection="remove", valuetype = "regex")
+  return(newDfm)
+}
+
+dfm1 <- ToTokenize(myCorpus, 1)
+saveRDS(dfm1, "dfm1.rds")
+rm(dfm1)
+dfm2 <- ToTokenize(myCorpus, 2)
+saveRDS(dfm2, "dfm2.rds")
+rm(dfm2)
+dfm3 <- ToTokenize(myCorpus, 3)
+saveRDS(dfm3, "dfm3.rds")
+rm(dfm3)
+dfm4 <- ToTokenize(myCorpus, 4)
+saveRDS(dfm4, "dfm4.rds")
+rm(dfm4)
+dfm5 <- ToTokenize(myCorpus, 5)
+saveRDS(dfm5, "dfm5.rds")
+rm(dfm5)
+
+rm(myCorpus)
+
+# Convert dfm to data table.
+library(stringr); library(data.table)
+ToDT <- function(object, n){
+        df <- data.frame(feature = featnames(object), frequency = colSums(object),
+                         row.names = NULL, stringsAsFactors = FALSE)
+        df$base <- word(string = df$feature, start = 1, end = n-1, sep = fixed(" "))
+        df$predict <- word(string = df$feature, start = n, end = n, sep = fixed(" "))
+        DT <- as.data.table(df)
+        DT <- DT[, c("feature") := NULL][order(-frequency)]
+        return(DT)
+}
+
+n1 <- readRDS("dfm1.rds")
+df1 <- data.frame(base = featnames(n1), frequency = colSums(n1),
+                         row.names = NULL, stringsAsFactors = FALSE)
+DT1 <- as.data.table(df1)[order(-frequency)]
+saveRDS(DT1, "DT1.rds")
+rm(n1); rm(df1); rm(DT1)
+
+
+n2 <- readRDS("dfm2.rds")
+DT2 <- ToDT(n2, 2)
+saveRDS(DT2, "DT2.rds")
+rm(n2); rm(DT2)
+
+n3 <- readRDS("dfm3.rds")
+DT3 <- ToDT(n3, 3)
+saveRDS(DT3, "DT3.rds")
+rm(n3); rm(DT3)
+
+n4 <- readRDS("dfm4.rds")
+DT4 <- ToDT(n4, 4)
+saveRDS(DT4, "DT4.rds")
+rm(n4); rm(DT4)
+
+n5 <- readRDS("dfm5.rds")
+DT5 <- ToDT(n5, 5)
+saveRDS(DT5, "DT5.rds")
+rm(n5); rm(DT5)
+```
+```{r}
+setwd("F:/Work/Coursera/10. Data Science Capstone/Week 6/Prediction Model/complete")
+DT1 <- readRDS("DT1.rds")
+DT2 <- readRDS("DT2.rds")
+DT3 <- readRDS("DT3.rds")
+DT4 <- readRDS("DT4.rds")
+DT5 <- readRDS("DT5.rds")
+
+DT2 <- DT2[frequency != 1]
+DT3 <- DT3[frequency != 1]
+DT4 <- DT4[frequency != 1]
+DT5 <- DT5[frequency != 1]
+
+saveRDS(DT2, "F:/Work/Coursera/10. Data Science Capstone/Week 6/Prediction Model/no singletons/DT2.rds")
+saveRDS(DT3, "F:/Work/Coursera/10. Data Science Capstone/Week 6/Prediction Model/no singletons/DT3.rds")
+saveRDS(DT4, "F:/Work/Coursera/10. Data Science Capstone/Week 6/Prediction Model/no singletons/DT4.rds")
+saveRDS(DT5, "F:/Work/Coursera/10. Data Science Capstone/Week 6/Prediction Model/no singletons/DT5.rds")
+```
+```{r}
+PredictNext <- function(input){
+        input <- tolower(input)
+        input <- unlist(strsplit(as.character(input), ' '))
+        n <- length(input)
+        if(n >= 4 & nrow(DT5[base == paste(input[n-3], input[n-2], input[n-1], input[n], sep = " "),]) > 0){
+                new <- DT5[.(paste(input[n-3], input[n-2], input[n-1], input[n], sep = " ")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(nrow(DT4[base == paste(input[n-2], input[n-1], input[n], sep = " "),]) > 0) {
+                new <- DT4[.(paste(input[n-2], input[n-1], input[n], sep = " ")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(nrow(DT3[base == paste(input[n-1], input[n], sep = " "),]) > 0){
+                new <- DT3[.(paste(input[n-1], input[n], sep = " ")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(nrow(DT2[base == paste(input[n], sep = ""),]) > 0){
+                new <- DT2[.(paste(input[n], sep = "")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(n == 3 & nrow(DT4[base == paste(input[n-2], input[n-1], input[n], sep = " "),]) > 0){
+                new <- DT4[.(paste(input[n-2], input[n-1], input[n], sep = " ")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(nrow(DT3[base == paste(input[n-1], input[n], sep = " "),]) > 0) {
+                new <- DT3[.(paste(input[n-1], input[n], sep = " ")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(nrow(DT2[base == paste(input[n], sep = ""),]) > 0){
+                new <- DT2[.(paste(input[n], sep = "")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(n == 2 & nrow(DT3[base == paste(input[n-1], input[n], sep = " "),]) > 0){
+                new <- DT3[.(paste(input[n-1], input[n], sep = " ")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(nrow(DT2[base == paste(input[n], sep = ""),]) > 0) {
+                new <- DT2[.(paste(input[n], sep = "")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else if(n == 1 & nrow(DT2[base == paste(input[n], sep = " "),]) > 0){
+                new <- DT2[.(paste(input[n], sep = " ")), head(.SD, 3), on = "base"]
+                return(new[, predict])
+        } else{
+          return("Unknown")
+        }
+}
+```
+

@@ -1,0 +1,146 @@
+---
+title: "SwiftKey Corpus Analysis and Model Building"
+author: "Xin Y. Gao"
+date: "December 25, 2017"
+output: html_document
+---
+
+### Summary
+
+This report explored three English-language datasets in the SwiftKey corpus. The data were collected from blogs, news and twitter. This report focused on exploring the data to get a good understanding of word frequencies in the forms of unigrams, bigrams and trigrams, though in the model building phase, we may also look at N-grams at higher N. The report also touched on the N-grams model that would be applied to predict the next word based on the previous N-1 typed words. 
+
+### Data Loading and Data Summary
+
+```{r}
+# Load the data
+con1 <- file("F:/Work/Coursera/10. Data Science Capstone/Week 1/final/en_US/en_US.blogs.txt")
+blogs <- readLines(con1, encoding = "UTF-8")
+close(con1)
+
+con2 <- file("F:/Work/Coursera/10. Data Science Capstone/Week 1/final/en_US/en_US.news.txt", "rb")
+news <- readLines(con2, encoding = "UTF-8", skipNul = T)
+close(con2)
+
+con3 <- file("F:/Work/Coursera/10. Data Science Capstone/Week 1/final/en_US/en_US.twitter.txt")
+twitter <- readLines(con3, encoding = "UTF-8", skipNul = T)
+close(con3)
+```
+```{r, echo=FALSE}
+# Summary statistics about the data sets
+data.frame(Size = c("248.5 Mb", "249.6 Mb", "301.4 Mb"), WordCounts = c(sum(nchar(blogs)), sum(nchar(news)), sum(nchar(twitter))), LineCounts = c("899,288", "1,010,242", "2,360,148"), row.names = c("blogs", "news", "twitter"))
+```
+
+### Data Sampling
+
+The original datasets are fairly large. It's not necessary to load in and use all of the data to build a predictive model. Instead, we randomly sampled 5% of lines from each of the three datasets to do the analysis. That would give us about 44,964 lines in the blogs dataset, 50,512 lines in the news dataset and 118,007 lines in the twitter dataset. 
+
+```{r}
+set.seed(100)
+blogs1 <- sample(blogs, round(0.05*length(blogs)), replace = FALSE)
+news1 <- sample(news, round(0.05*length(news)), replace = FALSE)
+twitter1 <- sample(twitter, round(0.05*length(twitter)), replace = FALSE)
+```
+
+### Exploratory Data Analysis
+
+The quanteda package was chosen to do the text mining because this package was designed to provide users a fast and efficient way to handle a corpus of text. 
+
+```{r, echo=FALSE}
+news1 <- gsub("?", "", x = news1, fixed = TRUE)
+news1 <- gsub("???Ts", "", x = news1, fixed = TRUE)
+```
+```{r, message=FALSE, warning=FALSE}
+library(quanteda)
+# Turn each dataset into a corpus
+blogs <- corpus(blogs1)
+news <- corpus(news1)
+twitter <- corpus(twitter1)
+# Add some document level variables for each corpus
+docvars(blogs, "source") <- "blogs"
+docvars(news, "source") <- "news"
+docvars(twitter, "source") <- "twitter"
+docvars(blogs, "line") <- 1:ndoc(blogs)
+docvars(news, "line") <- 1:ndoc(news)
+docvars(twitter, "line") <- 1:ndoc(twitter)
+
+# Combine three corpora into one large corpus
+myCorpus <- blogs + news + twitter
+
+# Read in a "blacklist" that contains profanity words. This file was downloaded from google (https://www.freewebheaders.com/full-list-of-bad-words-banned-by-google/). The words that appear in this list will be removed from the corpus.
+profanity <- as.character(read.csv("F:/Work/Coursera/10. Data Science Capstone/Week 2/analysis/full-list-of-bad-words-banned-by-google.csv", header = FALSE)$V1)
+```
+
+Created document-frequency matrix and inspected the unigram frequency. Some interesting discoveries were that the word "just" appeared with high frequency in the blogs and twitter corpus. "Said" was the most frequent word in the news corpus which probably related to the fact that news often cited people's statements. We also observed a lot of oral languages and slangs appeared in the twitter corpus, such as "lol", "rt" and "haha".  
+
+```{r, message=FALSE, warning=FALSE}
+# Create dfm for the entire corpus and plot the word cloud for the most frequent words
+DfmAll <- dfm(myCorpus, groups = "source", remove = c(stopwords("english"), profanity), remove_punct = TRUE,
+              remove_numbers = TRUE, remove_separators = TRUE)
+dfm_sort(DfmAll, decreasing = TRUE)[,1:10]
+topfeatures(DfmAll, 20)
+
+library(wordcloud)
+set.seed(100)
+textplot_wordcloud(DfmAll, min.freq = 5000, random.order = F, rot.per = 0.25, colors = RColorBrewer::brewer.pal(8,"Dark2"))
+
+# Create dfm for the blogs corpus and plot the word cloud
+DfmBlogs <- dfm(corpus_subset(myCorpus, source == "blogs"), groups = "source", remove = c(stopwords("english"), profanity), remove_punct = TRUE, remove_numbers = TRUE, remove_separators = TRUE)
+
+textplot_wordcloud(DfmBlogs, min.freq = 1000, random.order = F, rot.per = 0.25, colors = RColorBrewer::brewer.pal(8,"Dark2"))
+
+# Create dfm for the news corpus and plot the word cloud
+DfmNews <- dfm(corpus_subset(myCorpus, source == "news"), groups = "source", remove = c(stopwords("english"), profanity), remove_punct = TRUE, remove_numbers = TRUE, remove_separators = TRUE)
+
+textplot_wordcloud(DfmNews, min.freq = 1000, random.order = F, rot.per = 0.25, colors = RColorBrewer::brewer.pal(8,"Dark2"))
+
+# Create dfm for the twitter corpus and plot the word cloud
+DfmTwitter <- dfm(corpus_subset(myCorpus, source == "twitter"), groups = "source", remove = c(stopwords("english"), profanity), remove_punct = TRUE, remove_numbers = TRUE, remove_separators = TRUE)
+
+textplot_wordcloud(DfmTwitter, min.freq = 1000, random.order = F, rot.per = 0.25, colors = RColorBrewer::brewer.pal(8,"Dark2"))
+```
+
+### N-gram Model
+
+The entire corpus was tokenized into unigrams, bigrams and trigrams.
+```{r}
+# Writie a function to tokenize the corpus into N-grams.
+ToTokenize <- function(object, n){
+  tokensAll <- tokens(object, remove_numbers = TRUE, remove_punct = TRUE,
+                    remove_symbols = TRUE, remove_separators = TRUE,
+                    remove_twitter = TRUE, remove_hyphens = TRUE, remove_url = TRUE)
+  NoStopWord <- tokens_select(tokensAll, c(stopwords("english"), profanity), selection = "remove", case_insensitive = TRUE)
+  ng <- tokens_ngrams(NoStopWord, n, concatenator = " ")
+  newDfm <- dfm(ng)
+  return(newDfm)
+}
+
+dfm1 <- ToTokenize(myCorpus, 1)
+dfm2 <- ToTokenize(myCorpus, 2)
+dfm3 <- ToTokenize(myCorpus, 3)
+topfeatures(dfm1, 10)
+topfeatures(dfm2, 10)
+topfeatures(dfm3, 10)
+```
+
+Plot the top 10 features of the unigrams, bigrams and trigrams.
+
+```{r}
+barplot(topfeatures(dfm1, 10), ylab = "Count", main = "Frequency of Unigrams", col = "orange")
+barplot(topfeatures(dfm2, 10), ylab = "Count", main = "Frequency of Bigrams", col = "orange", las = 2)
+par(mar = c(8,4,2,2))
+barplot(topfeatures(dfm3, 10), ylab = "Count", main = "Frequency of Trigrams", col = "orange", las = 2, cex.names = 0.7) 
+```
+
+### Plan for Building a Predictive Model and Conclusion
+
+With the N-grams model, N represents the number of words that we want to use to predict the next word. We can build a model to first search in the trigrams, and then the bigrams if no match in the trigrams was found, and then search the unigrams if no match in bigrams was found. To get a higher model accuracy, we need to pay attention to the following things.
+
+1. Split the data into a training set and a test set. Train the model on the training set and test the performance on the test set.
+2. Keep the random sample rate at or above 5% to get a higher word coverage.
+3. Our model that was derived from the N-grams frequency counts would have problems when deal with any N-grams that have not been seen before, so we have to apply the smoothing techniques to make the model robust to infrequent grams or unseen or unknown words. The key point is that not to assign zero probability to unseen words. 
+4. The current plan is to apply the Katz's back-off model. This model allows the estimate of an N-gram to back off to models with a smaller histories. 
+5. Create N-gram files for different sizes of N (N = 1,2,3,4,5) and use data.table to process them. The base values and the predictive values would be separated and the frequency counts would be summarized. The frequency count dataset would serve as the database for the Shiny application.
+6. Need to think about how to fit the data on the shiny.app platform. May need to release some R objects from the memory as the analysis goes along. 
+
+
+
